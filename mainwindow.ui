@@ -58,14 +58,14 @@
            </widget>
           </item>
           <item row="1" column="1">
-           <widget class="QLineEdit" name="lineEdit_3">
+           <widget class="QLineEdit" name="timerPeriodLineEdit">
             <property name="text">
              <string>10</string>
             </property>
            </widget>
           </item>
           <item row="0" column="0" colspan="3">
-           <widget class="QCheckBox" name="checkBox_3">
+           <widget class="QCheckBox" name="timerCheckBox">
             <property name="text">
              <string>Автоматический запуск по сигналу таймера</string>
             </property>

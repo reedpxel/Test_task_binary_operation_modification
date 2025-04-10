@@ -4,10 +4,11 @@
 MainWindow::MainWindow(QWidget* parent)
         : QMainWindow(parent)
         , ui(new Ui::MainWindow)
+        , inputFilesTable(new InputFilesTable)
+        , timerId(0)
 {
     ui->setupUi(this);
     QBoxLayout* layout = new QBoxLayout(QBoxLayout::LeftToRight);
-    inputFilesTable = new InputFilesTable;
     layout->addWidget(inputFilesTable);
     ui->fileTableWidget->setLayout(layout);
     QObject::connect(ui->addFileButton, &QPushButton::clicked,
@@ -16,6 +17,8 @@ MainWindow::MainWindow(QWidget* parent)
         this, &MainWindow::onChangeOutputDirButtonClicked);
     QObject::connect(ui->startButton, &QPushButton::clicked,
         this, &MainWindow::onStartButtonClicked);
+    QObject::connect(ui->timerCheckBox, &QCheckBox::stateChanged,
+        this, &MainWindow::onTimerCheckBoxStateChanged);
 }
 
 MainWindow::~MainWindow() { delete ui; }
@@ -28,7 +31,7 @@ void MainWindow::workingProcessAsync()
     QtConcurrent::run([this]()
     {
         QObject::connect(this, &MainWindow::unlock, this,
-                         [this]() { enableControls(true); });
+            [this]() { enableControls(true); });
         filesProcessing();
         emit unlock();
     });
@@ -37,7 +40,8 @@ void MainWindow::workingProcessAsync()
 void MainWindow::filesProcessing()
 {
     QDir outputDirPath = QDir(ui->outputDirLineEdit->text()).absolutePath();
-    // if outputDirLineEdit is empty, files are saved in "." directory
+    // if outputDirLineEdit is empty, files are saved in the directory with
+    // application
     QVector<QString> filePaths;
     QString fileNameMask = ui->fileNameMaskLineEdit->text();
     for (int i = 0; i < inputFilesTable->rowCount(); ++i)
@@ -53,12 +57,17 @@ void MainWindow::filesProcessing()
         ui->statusBar->showMessage("Обработка файла " + QString::number(i + 1)
             + " из " + QString::number(filePaths.size()));
         QString path = filePaths[i];
-        if (path.isEmpty()) continue; // TO DO: add message box with errors
+        if (path.isEmpty()) continue;
         QFile inputFile(path);
         QFileInfo fileInfo(inputFile);
-        if (!inputFile.open(QFile::ReadOnly | QFile::Text)) continue; // TO DO same
+        if (!inputFile.open(QFile::ReadOnly | QFile::Text)) continue;
 
-        QString str = QTextStream(&inputFile).readAll();
+        QByteArray inputData(inputFile.size(), '\0');
+        QDataStream inputDataStream(&inputFile);
+        inputDataStream.readRawData(inputData.data(), inputData.size());
+
+        uint64_t mask = (ui->maskLineEdit->text()).toULongLong();
+        applyMaskToFileContent(inputData, mask);
 
         QString outputFilePath = ui->rewriteCheckBox->isChecked() ?
             outputDirPath.filePath(fileInfo.fileName()) :
@@ -66,11 +75,13 @@ void MainWindow::filesProcessing()
         QFile outputFile(outputFilePath);
         QFileInfo outputFileInfo(outputFile);
 
-        outputFile.open(QFile::ReadWrite | QFile::Text); // TO DO: add check
-        QTextStream outputFileContent(&outputFile);
-        uint64_t mask = (ui->maskLineEdit->text()).toULongLong();
-        QString strWithMask = applyMaskToFileContent(str, mask);
-        outputFileContent << strWithMask;
+        if (!outputFile.open(QFile::ReadWrite | QFile::Text))
+        {
+            inputFile.close();
+            continue;
+        }
+        QDataStream outputDataStream(&outputFile);
+        outputDataStream.writeRawData(inputData.data(), inputData.size());
         inputFile.close();
         outputFile.close();
     }
@@ -79,7 +90,7 @@ void MainWindow::filesProcessing()
         for (QString& path : filePaths)
         {
             // files that don't contain the name mask are not deleted
-            QFile(path).remove(); // TO DO: add error handling
+            QFile(path).remove();
         }
         int sz = inputFilesTable->rowCount();
         for (int i = 0; i <= sz; ++i)
@@ -97,27 +108,48 @@ void MainWindow::onChangeOutputDirButtonClicked()
     if (!outputDirPath.isEmpty()) ui->outputDirLineEdit->setText(outputDirPath);
 }
 
+void MainWindow::onTimerCheckBoxStateChanged(int state)
+{
+    if (state)
+    {
+        int period = ui->timerPeriodLineEdit->text().toInt();
+        if (period <= 0 || period > INT_MAX / 1000)
+        {
+            QMessageBox::critical(this, "Ошибка",
+                "Некорректное значение периода таймера");
+            ui->timerCheckBox->setCheckState(Qt::Unchecked);
+            return;
+        }
+        ui->startButton->setEnabled(false);
+        ui->timerPeriodLineEdit->setEnabled(false);
+        timerId = startTimer(period * 1000);
+        timerEventContent();
+    } else {
+        ui->startButton->setEnabled(true);
+        ui->timerPeriodLineEdit->setEnabled(true);
+        killTimer(timerId);
+    }
+}
+
 void MainWindow::enableControls(bool state)
 {
     ui->settingsGroupBox->setEnabled(state);
-    ui->startButton->setEnabled(state);
+    ui->startButton->setEnabled(state ?
+        !ui->timerCheckBox->isChecked() : false);
+    ui->addFileButton->setEnabled(state);
 }
 
-QByteArray MainWindow::applyMaskToFileContent(QString& str, uint64_t mask)
+void MainWindow::applyMaskToFileContent(QByteArray& fileContent, uint64_t mask)
 {
-    uint8_t maskArray[8];
-    for (int i = 0; i < 8; ++i)
+    // using local variable mask as an array of 8 uint8_t
+    uint8_t* maskArray = reinterpret_cast<uint8_t*>(&mask);
+    for (int i = 0, maskIndex = 0; i < fileContent.size();
+        ++i, ++maskIndex %= 8)
     {
-        maskArray[i] = mask >> (8 * (8 - i - 1));
+        // working with QByteArray's buffer, because QByteRef has no operator^=
+        reinterpret_cast<uint8_t&>(fileContent.data()[i]) ^=
+            maskArray[maskIndex];
     }
-    QByteArray res = str.toUtf8();
-    for (int i = 0, maskIndex = 0; i < res.size(); ++i, (++maskIndex) %= 8)
-    {
-        uint8_t element = res[i];
-        element ^= maskArray[maskIndex];
-        res[i] = element;
-    }
-    return res;
 }
 
 QString MainWindow::getUniqueFileName(const QString& newFilePath)
@@ -136,4 +168,12 @@ QString MainWindow::getUniqueFileName(const QString& newFilePath)
         }
     }
     return newFilePath;
+}
+
+void MainWindow::timerEvent(QTimerEvent*) { timerEventContent(); }
+
+void MainWindow::timerEventContent()
+{
+    if (!ui->settingsGroupBox->isEnabled()) return;
+    workingProcessAsync();
 }

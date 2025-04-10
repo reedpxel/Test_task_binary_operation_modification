@@ -6,7 +6,6 @@ InputFilesTable::InputFilesTable(QWidget* parent)
     horizontalHeader()->setVisible(false);
     horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     setFocusPolicy(Qt::NoFocus);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
 }
 
 void InputFilesTable::addFile()
